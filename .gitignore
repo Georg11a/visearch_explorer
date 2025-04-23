@@ -21,4 +21,6 @@ yarn-debug.log*
 yarn-error.log*
 
 # Cache files
-.cache
+.cachenode_modules/
+.cache/
+build/

@@ -24,3 +24,4 @@ yarn-error.log*
 .cachenode_modules/
 .cache/
 build/
+fresh_visearch_explorer/

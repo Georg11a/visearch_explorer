@@ -3,6 +3,72 @@ import _ from 'lodash';
 import Papa from 'papaparse';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
+// 收藏功能工具函数
+const getBookmarkedPapers = () => {
+  try {
+    const bookmarks = localStorage.getItem('bookmarkedPapers');
+    return bookmarks ? JSON.parse(bookmarks) : [];
+  } catch (error) {
+    console.error('Error reading bookmarks:', error);
+    return [];
+  }
+};
+
+const addBookmark = (paper) => {
+  try {
+    const bookmarks = getBookmarkedPapers();
+    const isAlreadyBookmarked = bookmarks.some(bookmark => bookmark.id === paper.id);
+    if (isAlreadyBookmarked) return false;
+    
+    const bookmarkData = {
+      id: paper.id,
+      title: paper.title,
+      authors: paper.authors,
+      year: paper.year,
+      venue: paper.venue,
+      abstract: paper.abstract,
+      link: paper.link,
+      area: paper.area,
+      bookmarkedAt: new Date().toISOString()
+    };
+    
+    bookmarks.push(bookmarkData);
+    localStorage.setItem('bookmarkedPapers', JSON.stringify(bookmarks));
+    
+    // 记录活动历史
+    const history = JSON.parse(localStorage.getItem('actionHistory') || '[]');
+    history.unshift({
+      type: 'bookmark',
+      timestamp: new Date().toISOString(),
+      title: paper.title,
+      paperId: paper.id
+    });
+    localStorage.setItem('actionHistory', JSON.stringify(history.slice(0, 50)));
+    
+    return true;
+  } catch (error) {
+    console.error('Error adding bookmark:', error);
+    return false;
+  }
+};
+
+const removeBookmark = (paperId) => {
+  try {
+    const bookmarks = getBookmarkedPapers();
+    const filteredBookmarks = bookmarks.filter(bookmark => bookmark.id !== paperId);
+    localStorage.setItem('bookmarkedPapers', JSON.stringify(filteredBookmarks));
+    return true;
+  } catch (error) {
+    console.error('Error removing bookmark:', error);
+    return false;
+  }
+};
+
+const isBookmarked = (paperId) => {
+  const bookmarks = getBookmarkedPapers();
+  return bookmarks.some(bookmark => bookmark.id === paperId);
+};
+
 const RegularSearch = () => {
   // State variables
   const [papers, setPapers] = useState([]);
@@ -10,6 +76,8 @@ const RegularSearch = () => {
   const [selectedPaper, setSelectedPaper] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [displayCount, setDisplayCount] = useState(12);
+  const [bookmarkStates, setBookmarkStates] = useState({}); // 新增：管理收藏状态
   
   // Filters
   const [filterSearchQuery, setFilterSearchQuery] = useState('');
@@ -25,6 +93,96 @@ const RegularSearch = () => {
   
   // Year distribution data for chart
   const [yearDistribution, setYearDistribution] = useState([]);
+  
+  // 新增：收藏处理函数
+  const handleBookmarkToggle = useCallback((paper, event) => {
+    if (event) {
+      event.stopPropagation(); // 防止触发其他点击事件
+    }
+    
+    const wasBookmarked = isBookmarked(paper.id);
+    
+    if (wasBookmarked) {
+      if (removeBookmark(paper.id)) {
+        setBookmarkStates(prev => ({ ...prev, [paper.id]: false }));
+      }
+    } else {
+      if (addBookmark(paper)) {
+        setBookmarkStates(prev => ({ ...prev, [paper.id]: true }));
+      }
+    }
+  }, []);
+
+  // 新增：处理论文查看（记录到历史）
+  const handlePaperView = useCallback((paper) => {
+    // 记录查看历史
+    try {
+      const recentPapers = JSON.parse(localStorage.getItem('recentPapers') || '[]');
+      const filteredRecent = recentPapers.filter(p => p.id !== paper.id);
+      
+      const paperData = {
+        id: paper.id,
+        title: paper.title,
+        authors: paper.authors,
+        year: paper.year,
+        venue: paper.venue,
+        viewedAt: new Date().toISOString()
+      };
+      
+      filteredRecent.unshift(paperData);
+      const trimmedRecent = filteredRecent.slice(0, 20);
+      localStorage.setItem('recentPapers', JSON.stringify(trimmedRecent));
+      
+      // 记录活动历史
+      const history = JSON.parse(localStorage.getItem('actionHistory') || '[]');
+      history.unshift({
+        type: 'view',
+        timestamp: new Date().toISOString(),
+        title: paper.title,
+        paperId: paper.id
+      });
+      localStorage.setItem('actionHistory', JSON.stringify(history.slice(0, 50)));
+    } catch (error) {
+      console.error('Error recording paper view:', error);
+    }
+  }, []);
+
+  // 新增：处理搜索记录
+  const recordSearchActivity = useCallback((query) => {
+    if (!query.trim()) return;
+    
+    try {
+      const history = JSON.parse(localStorage.getItem('actionHistory') || '[]');
+      history.unshift({
+        type: 'search',
+        timestamp: new Date().toISOString(),
+        query: query.trim()
+      });
+      localStorage.setItem('actionHistory', JSON.stringify(history.slice(0, 50)));
+    } catch (error) {
+      console.error('Error recording search activity:', error);
+    }
+  }, []);
+  
+  // 新增：初始化收藏状态
+  useEffect(() => {
+    const initBookmarkStates = () => {
+      const states = {};
+      searchResults.forEach(paper => {
+        states[paper.id] = isBookmarked(paper.id);
+      });
+      setBookmarkStates(states);
+    };
+    
+    if (searchResults.length > 0) {
+      initBookmarkStates();
+    }
+  }, [searchResults]);
+  
+  // 新增：Show More 按钮处理函数
+  const handleShowMore = () => {
+    setDisplayCount(prevCount => prevCount + 12);
+  };
   
   // Function to populate filter options
   const populateFilters = useCallback((papers) => {
@@ -223,6 +381,11 @@ const RegularSearch = () => {
   const filterPapers = useCallback(() => {
     const query = filterSearchQuery.toLowerCase();
     
+    // 记录搜索活动
+    if (query) {
+      recordSearchActivity(query);
+    }
+    
     // Filter papers based on criteria, making venue a partial match
     const filteredPapers = papers.filter(paper => 
       (!query || 
@@ -238,6 +401,7 @@ const RegularSearch = () => {
     const sortedPapers = filteredPapers.sort((a, b) => b.score - a.score);
     
     setSearchResults(sortedPapers);
+    setDisplayCount(12); // 重置显示数量
     
     // Update year distribution for the filtered results
     const yearCounts = _.countBy(sortedPapers, 'year');
@@ -252,7 +416,7 @@ const RegularSearch = () => {
     } else {
       console.log(`Filter applied successfully. Found ${filteredPapers.length} matching papers.`);
     }
-  }, [papers, filterSearchQuery, yearFilter, venueFilter, areaFilter, authorFilter]);
+  }, [papers, filterSearchQuery, yearFilter, venueFilter, areaFilter, authorFilter, recordSearchActivity]);
 
   // Function to highlight keywords in text
   const highlightKeywords = (text) => {
@@ -276,15 +440,37 @@ const RegularSearch = () => {
     );
   };
 
-  // Render paper result card with highlighted keywords
+  // MODIFIED: Render paper result card with highlighted keywords, title links and bookmark button
   const renderPaperCard = (paper) => {
     // Prepare highlighted title and abstract
     const highlightedTitle = highlightKeywords(paper.title);
     const highlightedAbstract = highlightKeywords(paper.abstract);
     
+    // Check if paper has a valid link (not just a placeholder)
+    const hasValidLink = paper.link && paper.link !== `#paper-${paper.id}` && !paper.link.startsWith('#paper-');
+    
+    const paperIsBookmarked = bookmarkStates[paper.id] || false;
+    
     return (
       <div key={paper.id} className="paper-card">
-        <h3 className="paper-title" dangerouslySetInnerHTML={{ __html: highlightedTitle }}></h3>
+        {hasValidLink ? (
+          <a 
+            href={paper.link} 
+            target="_blank" 
+            rel="noopener noreferrer"
+            className="paper-title-link"
+            onClick={() => handlePaperView(paper)}
+          >
+            <h3 className="paper-title" dangerouslySetInnerHTML={{ __html: highlightedTitle }}></h3>
+          </a>
+        ) : (
+          <h3 
+            className="paper-title" 
+            dangerouslySetInnerHTML={{ __html: highlightedTitle }}
+            onClick={() => handlePaperView(paper)}
+            style={{ cursor: 'pointer' }}
+          ></h3>
+        )}
         <p className="paper-authors">{paper.authors}</p>
         <div className="paper-meta">
           <span className="year-tag">{paper.year}</span>
@@ -293,6 +479,24 @@ const RegularSearch = () => {
         </div>
         <div className="paper-abstract" dangerouslySetInnerHTML={{ __html: highlightedAbstract }}></div>
         <div className="score-badge">Score: {paper.score}</div>
+        
+        {/* 新增：五角星收藏按钮 */}
+        <button
+          className={`bookmark-button ${paperIsBookmarked ? 'bookmarked' : ''}`}
+          onClick={(e) => handleBookmarkToggle(paper, e)}
+          title={paperIsBookmarked ? 'Remove bookmark' : 'Add bookmark'}
+        >
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path 
+              d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" 
+              stroke="currentColor" 
+              strokeWidth="1.5" 
+              strokeLinecap="round" 
+              strokeLinejoin="round"
+              fill={paperIsBookmarked ? 'currentColor' : 'none'}
+            />
+          </svg>
+        </button>
       </div>
     );
   };
@@ -432,14 +636,14 @@ const RegularSearch = () => {
             <p className="no-results">No papers match your search criteria. Try adjusting your filters.</p>
           ) : (
             <div className="results-grid">
-              {searchResults.slice(0, 12).map(paper => renderPaperCard(paper))}
+              {searchResults.slice(0, displayCount).map(paper => renderPaperCard(paper))}
             </div>
           )}
           
-          {searchResults.length > 12 && (
+          {searchResults.length > displayCount && (
             <div className="pagination">
-              <p>Showing 12 of {searchResults.length} results</p>
-              <button>Show More</button>
+              <p>Showing {displayCount} of {searchResults.length} results</p>
+              <button onClick={handleShowMore}>Show More</button>
             </div>
           )}
         </div>
@@ -447,9 +651,9 @@ const RegularSearch = () => {
       
       <style jsx>{`
         .regular-search-container {
-          padding: 20px;
-          max-width: 1200px;
-          margin: 0 auto;
+          padding: 0;
+          max-width: none;
+          margin: 0;
         }
         
         h1 {
@@ -585,12 +789,29 @@ const RegularSearch = () => {
           box-shadow: 0 4px 8px rgba(0,0,0,0.1);
         }
         
+        /* NEW: Styles for paper title links */
+        .paper-title-link {
+          text-decoration: none;
+          color: inherit;
+          display: block;
+        }
+
+        .paper-title-link:hover {
+          text-decoration: none;
+        }
+
+        .paper-title-link:hover .paper-title {
+          color: #2b6cb0;
+          text-decoration: underline;
+        }
+        
         .paper-title {
           font-size: 1.25rem;
           margin-top: 0;
           margin-bottom: 12px;
           color: #1a365d;
           padding-right: 60px; /* Make room for score badge */
+          transition: color 0.2s ease; /* Smooth color transition */
         }
         
         .paper-authors {
@@ -662,6 +883,51 @@ const RegularSearch = () => {
           border: none;
           border-radius: 4px;
           cursor: pointer;
+          transition: background-color 0.2s ease;
+        }
+        
+        .pagination button:hover {
+          background-color: #2d4a7c;
+        }
+        
+        /* 新增：五角星收藏按钮样式 */
+        .bookmark-button {
+          position: absolute;
+          top: 50px;
+          right: 20px;
+          background: none;
+          border: none;
+          cursor: pointer;
+          color: #cbd5e0;
+          transition: all 0.3s ease;
+          padding: 8px;
+          border-radius: 50%;
+          z-index: 2;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        
+        .bookmark-button:hover {
+          color: #f6ad55;
+          background-color: rgba(246, 173, 85, 0.15);
+          transform: scale(1.15);
+          box-shadow: 0 2px 8px rgba(246, 173, 85, 0.3);
+        }
+        
+        .bookmark-button.bookmarked {
+          color: #f6ad55;
+          background-color: rgba(246, 173, 85, 0.1);
+        }
+        
+        .bookmark-button.bookmarked:hover {
+          color: #e53e3e;
+          background-color: rgba(229, 62, 62, 0.1);
+          box-shadow: 0 2px 8px rgba(229, 62, 62, 0.3);
+        }
+        
+        .bookmark-button svg {
+          filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
         }
         
         .loading-state, .error-message, .no-results {

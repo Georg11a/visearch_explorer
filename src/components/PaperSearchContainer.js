@@ -35,8 +35,8 @@ const PaperSearchContainer = () => {
           onClick={() => setActiveTab('history')}
         >
           <div className="icon">📄</div>
-          <h2>History</h2>
-          <p>Explore papers in a visual format</p>
+          <h2>History Dashboard</h2>
+          <p>Explore your history in a visual format</p>
         </div>
       </div>
 

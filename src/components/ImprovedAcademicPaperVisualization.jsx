@@ -296,7 +296,7 @@ const ImprovedAcademicPaperVisualization = () => {
     
     // Highlight selected paper
     if (selectedPaper) {
-      node.attr("stroke", d => d.paper.id === selectedPaper.id ? "#FF6D01" : "#fff")
+      node.attr("stroke", d => d.paper.id === selectedPaper.id ? "#000000" : "#fff")
           .attr("stroke-width", d => d.paper.id === selectedPaper.id ? 3 : 1.5);
     }
     

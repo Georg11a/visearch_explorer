@@ -5,6 +5,119 @@ import { kmeans } from 'ml-kmeans';
 import _ from 'lodash';
 import Papa from 'papaparse';
 
+// 收藏功能工具函数
+const getBookmarkedPapers = () => {
+  try {
+    const bookmarks = localStorage.getItem('bookmarkedPapers');
+    return bookmarks ? JSON.parse(bookmarks) : [];
+  } catch (error) {
+    console.error('Error reading bookmarks:', error);
+    return [];
+  }
+};
+
+const addBookmark = (paper) => {
+  try {
+    const bookmarks = getBookmarkedPapers();
+    const isAlreadyBookmarked = bookmarks.some(bookmark => bookmark.id === paper.id);
+    if (isAlreadyBookmarked) return false;
+    
+    const bookmarkData = {
+      id: paper.id,
+      title: paper.title,
+      authors: paper.authors,
+      year: paper.year,
+      venue: paper.venue,
+      abstract: paper.abstract,
+      link: paper.link,
+      area: paper.area,
+      bookmarkedAt: new Date().toISOString()
+    };
+    
+    bookmarks.push(bookmarkData);
+    localStorage.setItem('bookmarkedPapers', JSON.stringify(bookmarks));
+    
+    // 记录活动历史
+    const history = JSON.parse(localStorage.getItem('actionHistory') || '[]');
+    history.unshift({
+      type: 'bookmark',
+      timestamp: new Date().toISOString(),
+      title: paper.title,
+      paperId: paper.id
+    });
+    localStorage.setItem('actionHistory', JSON.stringify(history.slice(0, 50)));
+    
+    return true;
+  } catch (error) {
+    console.error('Error adding bookmark:', error);
+    return false;
+  }
+};
+
+const removeBookmark = (paperId) => {
+  try {
+    const bookmarks = getBookmarkedPapers();
+    const filteredBookmarks = bookmarks.filter(bookmark => bookmark.id !== paperId);
+    localStorage.setItem('bookmarkedPapers', JSON.stringify(filteredBookmarks));
+    return true;
+  } catch (error) {
+    console.error('Error removing bookmark:', error);
+    return false;
+  }
+};
+
+const isBookmarked = (paperId) => {
+  const bookmarks = getBookmarkedPapers();
+  return bookmarks.some(bookmark => bookmark.id === paperId);
+};
+
+const addToRecentPapers = (paper) => {
+  try {
+    const recentPapers = JSON.parse(localStorage.getItem('recentPapers') || '[]');
+    const filteredRecent = recentPapers.filter(p => p.id !== paper.id);
+    
+    const paperData = {
+      id: paper.id,
+      title: paper.title,
+      authors: paper.authors,
+      year: paper.year,
+      venue: paper.venue,
+      viewedAt: new Date().toISOString()
+    };
+    
+    filteredRecent.unshift(paperData);
+    const trimmedRecent = filteredRecent.slice(0, 20);
+    localStorage.setItem('recentPapers', JSON.stringify(trimmedRecent));
+    
+    // 记录活动历史
+    const history = JSON.parse(localStorage.getItem('actionHistory') || '[]');
+    history.unshift({
+      type: 'view',
+      timestamp: new Date().toISOString(),
+      title: paper.title,
+      paperId: paper.id
+    });
+    localStorage.setItem('actionHistory', JSON.stringify(history.slice(0, 50)));
+  } catch (error) {
+    console.error('Error adding to recent papers:', error);
+  }
+};
+
+const recordSearchActivity = (query) => {
+  if (!query.trim()) return;
+  
+  try {
+    const history = JSON.parse(localStorage.getItem('actionHistory') || '[]');
+    history.unshift({
+      type: 'search',
+      timestamp: new Date().toISOString(),
+      query: query.trim()
+    });
+    localStorage.setItem('actionHistory', JSON.stringify(history.slice(0, 50)));
+  } catch (error) {
+    console.error('Error recording search activity:', error);
+  }
+};
 
 const EnhancedAcademicPaperVisualization = () => {
   // State variables
@@ -14,6 +127,13 @@ const EnhancedAcademicPaperVisualization = () => {
   const [selectedPaper, setSelectedPaper] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [bookmarkStates, setBookmarkStates] = useState({}); // 新增：管理收藏状态
+  
+  // NEW: Data source state
+  const [dataSource, setDataSource] = useState('default'); // 'default' or 'uploaded'
+  const [uploadedFile, setUploadedFile] = useState(null);
+  const [uploadedPapers, setUploadedPapers] = useState([]);
+  const [uploadStatus, setUploadStatus] = useState('');
   
   // Add computation state tracking for better UX
   const [computeState, setComputeState] = useState({
@@ -43,6 +163,7 @@ const EnhancedAcademicPaperVisualization = () => {
   // Refs
   const containerRef = useRef(null);
   const svgRef = useRef(null);
+  const fileInputRef = useRef(null);
   // Maintain visualization state in a ref to avoid extra re-renders
   const visualizationRef = useRef({
     isInitialized: false,
@@ -51,6 +172,46 @@ const EnhancedAcademicPaperVisualization = () => {
     zoomBehavior: null,
     fixedPositions: {}
   });
+
+  // 新增：收藏处理函数
+  const handleBookmarkToggle = useCallback((paper, event) => {
+    if (event) {
+      event.stopPropagation(); // 防止触发其他点击事件
+    }
+    
+    const wasBookmarked = isBookmarked(paper.id);
+    
+    if (wasBookmarked) {
+      if (removeBookmark(paper.id)) {
+        setBookmarkStates(prev => ({ ...prev, [paper.id]: false }));
+      }
+    } else {
+      if (addBookmark(paper)) {
+        setBookmarkStates(prev => ({ ...prev, [paper.id]: true }));
+      }
+    }
+  }, []);
+  
+  // 新增：处理论文选择（同时记录到历史）
+  const handlePaperSelect = useCallback((paper) => {
+    setSelectedPaper(paper);
+    addToRecentPapers(paper);
+  }, []);
+  
+  // 新增：初始化收藏状态
+  useEffect(() => {
+    const initBookmarkStates = () => {
+      const states = {};
+      searchResults.forEach(paper => {
+        states[paper.id] = isBookmarked(paper.id);
+      });
+      setBookmarkStates(states);
+    };
+    
+    if (searchResults.length > 0) {
+      initBookmarkStates();
+    }
+  }, [searchResults]);
 
   // Initialize fixed positions storage
   useEffect(() => {
@@ -99,6 +260,124 @@ const EnhancedAcademicPaperVisualization = () => {
       };
     });
   }, []);
+
+  // NEW: Function to handle CSV file upload
+  const handleFileUpload = useCallback((event) => {
+    const file = event.target.files[0];
+    if (!file) return;
+    
+    setUploadedFile(file);
+    setUploadStatus('Uploading and parsing CSV file...');
+    setIsLoading(true);
+    setError(null);
+    
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const csvText = e.target.result;
+      
+      Papa.parse(csvText, {
+        header: true,
+        dynamicTyping: true,
+        skipEmptyLines: true,
+        transformHeader: header => header.toLowerCase().trim(),
+        complete: (results) => {
+          try {
+            if (results.errors && results.errors.length > 0) {
+              console.error('CSV parsing errors:', results.errors);
+              throw new Error(`Failed to parse CSV: ${results.errors[0].message}`);
+            }
+            
+            console.log("CSV Headers found:", results.meta.fields);
+            console.log("Raw CSV data sample:", results.data.slice(0, 3));
+            
+            // Process uploaded paper data
+            const processedPapers = results.data
+              .filter(paper => paper && (paper.title || paper.id))
+              .map((paper, index) => {
+                // Generate stable embeddings
+                const seededRandom = (seed) => {
+                  let m = 2**35 - 31;
+                  let a = 185852;
+                  let s = seed % m;
+                  return function() {
+                    return (s = s * a % m) / m;
+                  };
+                };
+                
+                const rand = seededRandom(index * 1000);
+                const embedding = Array.from({ length: 50 }, () => rand() * 2 - 1);
+                
+                const areaValue = paper.area || paper.field || paper.category || paper.topic || 'General';
+                
+                return {
+                  id: paper.id || `uploaded-paper-${index}`,
+                  title: paper.title || `Paper ${index}`,
+                  authors: paper.authors || 'Unknown Authors',
+                  abstract: paper.abstract || 'No abstract available',
+                  venue: paper.venue || paper.conference || 'Unknown Venue',
+                  year: paper.year || new Date().getFullYear(),
+                  type: paper.type || 'Research Paper',
+                  link: paper.url || paper.link || `#paper-${index}`,
+                  embedding: embedding,
+                  score: 0,
+                  cluster: null,
+                  area: areaValue
+                };
+              });
+            
+            console.log(`Successfully processed ${processedPapers.length} papers from uploaded CSV`);
+            
+            setUploadedPapers(processedPapers);
+            setUploadStatus(`Successfully loaded ${processedPapers.length} papers from ${file.name}`);
+            setIsLoading(false);
+            
+            // If user has uploaded a file, automatically switch to using it
+            if (processedPapers.length > 0) {
+              setDataSource('uploaded');
+            }
+            
+          } catch (error) {
+            console.error('Error processing uploaded CSV:', error);
+            setError(`Failed to process uploaded CSV: ${error.message}`);
+            setUploadStatus('Failed to process uploaded file');
+            setIsLoading(false);
+          }
+        },
+        error: (error) => {
+          console.error('CSV parsing error:', error);
+          setError(`Failed to parse CSV: ${error.message}`);
+          setUploadStatus('Failed to parse uploaded file');
+          setIsLoading(false);
+        }
+      });
+    };
+    
+    reader.onerror = () => {
+      setError('Failed to read uploaded file');
+      setUploadStatus('Failed to read uploaded file');
+      setIsLoading(false);
+    };
+    
+    reader.readAsText(file);
+  }, []);
+
+  // NEW: Function to handle data source change
+  const handleDataSourceChange = useCallback((source) => {
+    setDataSource(source);
+    setError(null);
+    
+    // Reset computation state when changing data source
+    setComputeState(prev => ({
+      ...prev,
+      umapComputed: false,
+      clusteringComputed: false
+    }));
+    
+    // Clear visualization state
+    visualizationRef.current.fixedPositions = {};
+    visualizationRef.current.isInitialized = false;
+    setUmapResult(null);
+  }, []);
   
   // Function to populate filter options
   const populateFilters = useCallback((papers) => {
@@ -132,179 +411,170 @@ const EnhancedAcademicPaperVisualization = () => {
   }, []);
   
   // Load papers - improved implementation with better error handling
-useEffect(() => {
-  const loadPapers = async () => {
-    try {
-      setIsLoading(true);
-      setError(null);
-      
-      updateStatus("Loading paper data...", 10);
-
-      // 尝试加载数据
+  useEffect(() => {
+    const loadPapers = async () => {
       try {
-        updateStatus("Checking for CSV data...", 20);
+        setIsLoading(true);
+        setError(null);
         
-        // 尝试从两个可能的来源加载数据
-        let csvText;
+        updateStatus("Loading paper data...", 10);
+
+        // Try to load default data
         try {
-          if (window.fs) {
-            // 尝试使用window.fs读取
-            console.log("Attempting to load CSV using window.fs...");
-            csvText = await window.fs.readFile('unique_papers.csv', { encoding: 'utf8' });
-            console.log("CSV loaded successfully via window.fs");
-          } else {
-            // 尝试从public文件夹获取
-            console.log("window.fs not available, attempting to fetch from public folder...");
-            const response = await fetch(`${process.env.PUBLIC_URL}/data/unique_papers.csv`);
-            csvText = await response.text();
-            console.log("CSV loaded successfully via fetch");
-          }
+          updateStatus("Checking for default CSV data...", 20);
           
-          if (csvText) {
-            updateStatus("Parsing CSV data...", 30);
+          let csvText;
+          try {
+            if (window.fs) {
+              console.log("Attempting to load default CSV using window.fs...");
+              csvText = await window.fs.readFile('unique_papers.csv', { encoding: 'utf8' });
+              console.log("Default CSV loaded successfully via window.fs");
+            } else {
+              console.log("window.fs not available, attempting to fetch from public folder...");
+              const response = await fetch(`${process.env.PUBLIC_URL}/data/unique_papers.csv`);
+              csvText = await response.text();
+              console.log("Default CSV loaded successfully via fetch");
+            }
             
-            // 使用PapaParse解析CSV数据
-            Papa.parse(csvText, {
-              header: true,
-              dynamicTyping: true,
-              skipEmptyLines: true,
-              transformHeader: header => header.toLowerCase().trim(), // 将表头转换为小写
-              complete: (results) => {
-                if (results.errors && results.errors.length > 0) {
-                  console.error('CSV parsing errors:', results.errors);
-                  throw new Error(`Failed to parse CSV: ${results.errors[0].message}`);
-                }
-                
-                // 记录表头以便调试
-                console.log("CSV Headers found:", results.meta.fields);
-                
-                // 处理论文数据
-                const processedPapers = results.data
-                  .filter(paper => paper && (paper.title || paper.id)) // 过滤无效条目
-                  .map((paper, index) => {
-                    // 生成稳定的随机嵌入向量
-                    const seededRandom = (seed) => {
-                      let m = 2**35 - 31;
-                      let a = 185852;
-                      let s = seed % m;
-                      return function() {
-                        return (s = s * a % m) / m;
+            if (csvText) {
+              updateStatus("Parsing default CSV data...", 30);
+              
+              Papa.parse(csvText, {
+                header: true,
+                dynamicTyping: true,
+                skipEmptyLines: true,
+                transformHeader: header => header.toLowerCase().trim(),
+                complete: (results) => {
+                  if (results.errors && results.errors.length > 0) {
+                    console.error('CSV parsing errors:', results.errors);
+                    throw new Error(`Failed to parse CSV: ${results.errors[0].message}`);
+                  }
+                  
+                  console.log("CSV Headers found:", results.meta.fields);
+                  
+                  const processedPapers = results.data
+                    .filter(paper => paper && (paper.title || paper.id))
+                    .map((paper, index) => {
+                      const seededRandom = (seed) => {
+                        let m = 2**35 - 31;
+                        let a = 185852;
+                        let s = seed % m;
+                        return function() {
+                          return (s = s * a % m) / m;
+                        };
                       };
-                    };
-                    
-                    const rand = seededRandom(index * 1000); // 基于索引的种子
-                    const embedding = Array.from({ length: 50 }, () => rand() * 2 - 1);
-                    
-                    // 确定领域字段，使用备选字段
-                    const areaValue = paper.area || paper.field || paper.category || paper.topic || 'General';
-                    
-                    return {
-                      id: paper.id || `paper-${index}`,
-                      title: paper.title || `Paper ${index}`,
-                      authors: paper.authors || 'Unknown Authors',
-                      abstract: paper.abstract || 'No abstract available',
-                      venue: paper.venue || paper.conference || 'Unknown Venue',
-                      year: paper.year || new Date().getFullYear(),
-                      type: paper.type || 'Research Paper',
-                      link: paper.url || paper.link || `#paper-${index}`,
-                      embedding: embedding,
-                      score: 0,
-                      cluster: null,
-                      area: areaValue
-                    };
-                  });
-                
-                // 记录区域值以便调试
-                const areaValues = processedPapers.map(p => p.area);
-                const uniqueAreas = [...new Set(areaValues)];
-                console.log(`Loaded ${processedPapers.length} papers from CSV`);
-                console.log(`Found ${uniqueAreas.length} unique areas:`, uniqueAreas);
-                
-                setPapers(processedPapers);
-                setSearchResults(processedPapers);
-                
-                // 提取过滤器选项
-                populateFilters(processedPapers);
-                
-                setIsLoading(false);
-                updateStatus("Paper data loaded", 100);
-              },
-              error: (error) => {
-                console.error('CSV parsing error:', error);
-                throw new Error(`Failed to parse CSV: ${error.message}`);
-              }
-            });
-            return; // 如果成功加载CSV就提前退出
+                      
+                      const rand = seededRandom(index * 1000);
+                      const embedding = Array.from({ length: 50 }, () => rand() * 2 - 1);
+                      
+                      const areaValue = paper.area || paper.field || paper.category || paper.topic || 'General';
+                      
+                      return {
+                        id: paper.id || `paper-${index}`,
+                        title: paper.title || `Paper ${index}`,
+                        authors: paper.authors || 'Unknown Authors',
+                        abstract: paper.abstract || 'No abstract available',
+                        venue: paper.venue || paper.conference || 'Unknown Venue',
+                        year: paper.year || new Date().getFullYear(),
+                        type: paper.type || 'Research Paper',
+                        link: paper.url || paper.link || `#paper-${index}`,
+                        embedding: embedding,
+                        score: 0,
+                        cluster: null,
+                        area: areaValue
+                      };
+                    });
+                  
+                  const areaValues = processedPapers.map(p => p.area);
+                  const uniqueAreas = [...new Set(areaValues)];
+                  console.log(`Loaded ${processedPapers.length} papers from default CSV`);
+                  console.log(`Found ${uniqueAreas.length} unique areas:`, uniqueAreas);
+                  
+                  setPapers(processedPapers);
+                  setSearchResults(processedPapers);
+                  populateFilters(processedPapers);
+                  
+                  setIsLoading(false);
+                  updateStatus("Default paper data loaded", 100);
+                },
+                error: (error) => {
+                  console.error('CSV parsing error:', error);
+                  throw new Error(`Failed to parse CSV: ${error.message}`);
+                }
+              });
+              return;
+            }
+          } catch (error) {
+            console.error('Error loading default CSV data, falling back to mock data:', error);
+            updateStatus("Error loading default CSV. Using mock data...", 40);
           }
         } catch (error) {
-          console.error('Error loading CSV data, falling back to mock data:', error);
-          updateStatus("Error loading CSV. Using mock data...", 40);
-          // 继续使用模拟数据生成
+          console.error('Error loading default data, falling back to mock data:', error);
         }
+        
+        // Generate mock data as fallback
+        updateStatus("Generating mock data...", 50);
+        const mockPapers = generateMockData(500);
+        setPapers(mockPapers);
+        setSearchResults(mockPapers);
+        populateFilters(mockPapers);
+        
+        setIsLoading(false);
+        updateStatus("Mock data generated", 100);
+        
       } catch (error) {
-        console.error('Error loading real data, falling back to mock data:', error);
-        // 继续使用模拟数据生成
+        console.error('Failed to load papers:', error);
+        setError(`Failed to load papers: ${error.message}`);
+        
+        const mockPapers = generateMockData(500);
+        setPapers(mockPapers);
+        setSearchResults(mockPapers);
+        populateFilters(mockPapers);
+        
+        setIsLoading(false);
+        updateStatus("Mock data generated as fallback", 100);
       }
-      
-      // 如果CSV加载失败则生成模拟数据
-      updateStatus("Generating mock data...", 50);
-      const mockPapers = generateMockData(500);
-      setPapers(mockPapers);
-      setSearchResults(mockPapers);
-      
-      // 提取过滤器选项
-      populateFilters(mockPapers);
-      
-      setIsLoading(false);
-      updateStatus("Mock data generated", 100);
-      
-    } catch (error) {
-      console.error('Failed to load papers:', error);
-      setError(`Failed to load papers: ${error.message}`);
-      
-      // 最终备选：生成模拟数据
-      const mockPapers = generateMockData(500);
-      setPapers(mockPapers);
-      setSearchResults(mockPapers);
-      
-      // 提取过滤器选项
-      populateFilters(mockPapers);
-      
-      setIsLoading(false);
-      updateStatus("Mock data generated as fallback", 100);
-    }
-  };
-  
-  loadPapers();
-  
-  // 高效处理窗口调整大小
-  const updateDimensions = _.throttle(() => {
-    if (containerRef.current) {
-      const { width, height } = containerRef.current.getBoundingClientRect();
-      setDimensions({ 
-        width: Math.max(width, 300), 
-        // MODIFIED: made fixed height larger to have a bigger chart canvas
-        height: Math.max(height, 700) 
-      });
-    }
-  }, 200); // 节流以避免过多重渲染
-  
-  window.addEventListener('resize', updateDimensions);
-  
-  // 初始尺寸设置，略微延迟以确保容器已渲染
-  setTimeout(updateDimensions, 100);
-  
-  return () => {
-    window.removeEventListener('resize', updateDimensions);
-    // 清理任何D3模拟 - 修复以避免eslint警告
-    const currentRef = visualizationRef.current;
-    if (currentRef.simulation) {
-      currentRef.simulation.stop();
-    }
-  };
-}, [generateMockData, populateFilters, updateStatus]);
+    };
+    
+    loadPapers();
+    
+    const updateDimensions = _.throttle(() => {
+      if (containerRef.current) {
+        const { width, height } = containerRef.current.getBoundingClientRect();
+        setDimensions({ 
+          width: Math.max(width, 300), 
+          height: Math.max(height, 700) 
+        });
+      }
+    }, 200);
+    
+    window.addEventListener('resize', updateDimensions);
+    setTimeout(updateDimensions, 100);
+    
+    return () => {
+      window.removeEventListener('resize', updateDimensions);
+      const currentRef = visualizationRef.current;
+      if (currentRef.simulation) {
+        currentRef.simulation.stop();
+      }
+    };
+  }, [generateMockData, populateFilters, updateStatus]);
 
+  // NEW: Effect to handle data source changes
+  useEffect(() => {
+    if (dataSource === 'uploaded' && uploadedPapers.length > 0) {
+      setSearchResults(uploadedPapers);
+      populateFilters(uploadedPapers);
+    } else if (dataSource === 'default' && papers.length > 0) {
+      setSearchResults(papers);
+      populateFilters(papers);
+    }
+  }, [dataSource, uploadedPapers, papers, populateFilters]);
 
+  // Get current dataset based on data source
+  const getCurrentDataset = useCallback(() => {
+    return dataSource === 'uploaded' ? uploadedPapers : papers;
+  }, [dataSource, uploadedPapers, papers]);
   
   // Memoized similarity calculation function for better performance
   const calculateSimilarity = useCallback((query, paper) => {
@@ -313,11 +583,9 @@ useEffect(() => {
     const queryTerms = query.toLowerCase().split(/\s+/);
     const paperText = `${paper.title} ${paper.abstract} ${paper.authors} ${paper.type}`.toLowerCase();
     
-    // Calculate term frequency with optimized method
     let matchCount = 0;
     const termCounts = {};
     
-    // Count all terms at once for efficiency
     queryTerms.forEach(term => {
       if (term.length > 2) {
         if (!termCounts[term]) {
@@ -326,7 +594,6 @@ useEffect(() => {
           termCounts[term] = matches ? matches.length : 0;
           matchCount += termCounts[term];
           
-          // Boost score for title matches
           if (paper.title.toLowerCase().includes(term)) {
             matchCount += 3;
           }
@@ -334,29 +601,24 @@ useEffect(() => {
       }
     });
     
-    // Stable scoring based on paper ID and query
     const paperIdHash = parseInt(paper.id.split('-').pop() || '0', 10);
     const queryHash = query.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0);
     const stableFactor = (Math.sin(paperIdHash * 0.1 + queryHash * 0.01) * 0.2);
     
-    // Normalize score between -0.6 and 0.6
     return Math.min(0.6, (matchCount / (queryTerms.length * 3 || 1)) * 1.2) + stableFactor;
   }, []);
 
-  // Optimized search handler with debounce to prevent excessive calculations
+  // Optimized search handler with debounce
   const debouncedSearch = useMemo(() => 
-    _.debounce((query, papers, calculateSimilarity) => {
+    _.debounce((query, currentPapers, calculateSimilarity) => {
       if (!query.trim()) {
-        // Show all papers with stable scores
-        const results = papers.map(paper => {
+        const results = currentPapers.map(paper => {
           const idHash = parseInt(paper.id.split('-').pop() || '0', 10);
           const stableScore = (Math.sin(idHash * 0.1) * 1.2) - 0.6;
           return { ...paper, score: stableScore, cluster: null };
         });
         
         setSearchResults(results);
-        
-        // Reset computation state when search changes
         setComputeState(prev => ({
           ...prev,
           umapComputed: false,
@@ -365,8 +627,7 @@ useEffect(() => {
         return;
       }
       
-      // Calculate similarity scores and sort results with optimized approach
-      const results = papers.map(paper => {
+      const results = currentPapers.map(paper => {
         const score = calculateSimilarity(query, paper);
         return { ...paper, score, cluster: null };
       })
@@ -374,14 +635,12 @@ useEffect(() => {
       
       setSearchResults(results);
       
-      // Select the top result
       if (results.length > 0) {
         setSelectedPaper(results[0]);
       } else {
         setSelectedPaper(null);
       }
       
-      // Reset computation state when search changes
       setComputeState(prev => ({
         ...prev,
         umapComputed: false,
@@ -394,36 +653,38 @@ useEffect(() => {
   // Handle search form submission
   const handleSearch = useCallback((e) => {
     if (e) e.preventDefault();
-    debouncedSearch(searchQuery, papers, calculateSimilarity);
-  }, [searchQuery, papers, calculateSimilarity, debouncedSearch]);
+    const currentDataset = getCurrentDataset();
+    debouncedSearch(searchQuery, currentDataset, calculateSimilarity);
+  }, [searchQuery, getCurrentDataset, calculateSimilarity, debouncedSearch]);
 
   // Function to perform semantic search 
   const performSemanticSearch = useCallback(() => {
     const query = semanticSearchQuery.trim();
+    const currentDataset = getCurrentDataset();
+    
     if (!query) {
-      // Clear previous results if query is empty
-      setSearchResults(papers);
+      setSearchResults(currentDataset);
       updateStatus("Please enter a search query", 0, true);
       return;
     }
     
+    // 记录搜索活动
+    recordSearchActivity(query);
+    
     updateStatus("Performing semantic search...", 30);
     
     try {
-      // Using the standard similarity calculation
-      const updatedPapers = papers.map(paper => {
+      const updatedPapers = currentDataset.map(paper => {
         const score = calculateSimilarity(query, paper);
         return { ...paper, score };
       });
-      
-      // Sort papers by similarity score and filter by min score
+
       const results = [...updatedPapers]
         .sort((a, b) => b.score - a.score)
         .filter(paper => paper.score > (minScore / 100) - 0.5);
         
       setSearchResults(results);
       
-      // Reset computation state when search changes
       setComputeState(prev => ({
         ...prev,
         umapComputed: false,
@@ -435,7 +696,7 @@ useEffect(() => {
       console.error("Error performing semantic search:", error);
       updateStatus("Search failed: " + error.message, 0, true);
     }
-  }, [semanticSearchQuery, papers, minScore, calculateSimilarity, updateStatus]);
+  }, [semanticSearchQuery, getCurrentDataset, minScore, calculateSimilarity, updateStatus]);
 
   // Progressive UMAP computation for initial layout only
   const runUMAP = useCallback(() => {
@@ -449,7 +710,6 @@ useEffect(() => {
         progress: 0 
       }));
       
-      // Check if all search results have valid embeddings
       const allHaveEmbeddings = searchResults.every(paper => 
         paper.embedding && Array.isArray(paper.embedding) && paper.embedding.length > 0
       );
@@ -465,23 +725,18 @@ useEffect(() => {
         return;
       }
       
-      // Implement progressive computation using setTimeout to avoid blocking the UI
       const computeUMAP = async () => {
         console.log("Computing UMAP projection for initial layout only");
         
-        // Extract embeddings for dimensionality reduction
         const embeddings = searchResults.map(paper => paper.embedding);
         
-        // Show progressive loading steps
         for (let i = 0; i < 4; i++) {
           await new Promise(resolve => setTimeout(resolve, 50));
           setComputeState(prev => ({ ...prev, progress: (i + 1) * 20 }));
         }
         
-        // Perform dimensionality reduction with UMAP in a separate promise to avoid UI freeze
         const result = await new Promise(resolve => {
           setTimeout(() => {
-            // Configure UMAP with enhanced parameters for better visualization
             const umap = new UMAP.UMAP({
               nComponents: 2,
               nNeighbors: Math.min(15, searchResults.length - 1),
@@ -532,24 +787,20 @@ useEffect(() => {
         progress: 0 
       }));
       
-      // Run clustering in a non-blocking way
       const computeClustering = async () => {
         console.log("Computing K-means clusters");
         
-        // Extract embeddings for clustering
         const embeddings = searchResults.map(paper => paper.embedding);
         
-        // Show progressive loading steps
         for (let i = 0; i < 4; i++) {
           await new Promise(resolve => setTimeout(resolve, 50));
           setComputeState(prev => ({ ...prev, progress: (i + 1) * 20 }));
         }
         
-        // Run K-means clustering with proper parameters in a separate promise
         const clusterResult = await new Promise(resolve => {
           setTimeout(() => {
             const result = kmeans(embeddings, numClusters, {
-              seed: 42, // Fixed seed for consistent results
+              seed: 42,
               initialization: 'kmeans++',
               maxIterations: 100
             });
@@ -557,7 +808,6 @@ useEffect(() => {
           }, 10);
         });
         
-        // Update search results with cluster assignments
         const updatedResults = searchResults.map((paper, index) => ({
           ...paper,
           cluster: index < clusterResult.clusters.length ? clusterResult.clusters[index] : null
@@ -606,10 +856,11 @@ useEffect(() => {
 
   // Trigger initial search when papers are loaded
   useEffect(() => {
-    if (papers.length > 0 && !isLoading) {
+    const currentDataset = getCurrentDataset();
+    if (currentDataset.length > 0 && !isLoading) {
       handleSearch();
     }
-  }, [papers, isLoading, handleSearch]);
+  }, [getCurrentDataset, isLoading, handleSearch]);
 
   // Handle live semantic search (debounced)
   const debouncedSemanticSearch = useMemo(() => 
@@ -637,52 +888,43 @@ useEffect(() => {
         .attr('width', '100%')
         .attr('height', dimensions.height);
       
-      // Clear previous visualization only if not initialized
       if (!visualizationRef.current.isInitialized) {
         svg.selectAll('*').remove();
         
-        // Create main visualization groups
         svg.append('g').attr('class', 'points-container');
         svg.append('g').attr('class', 'legend-container')
           .attr('transform', `translate(${dimensions.width - 70}, ${(dimensions.height - 200) / 2})`);
         
-        // Set initialized flag
         visualizationRef.current.isInitialized = true;
       }
       
-      // MODIFIED: Added wider spread for better point distribution
-      // Set up scales for X and Y axes with the UMAP result
       const xExtent = d3.extent(umapResult, d => d[0]);
       const yExtent = d3.extent(umapResult, d => d[1]);
       
-      // MODIFIED: Decreased padding to use more of the available space
       const padding = 40;
       
       const xScale = d3.scaleLinear()
         .domain([
-          xExtent[0] - (xExtent[1] - xExtent[0]) * 0.15, // MODIFIED: increased spread
-          xExtent[1] + (xExtent[1] - xExtent[0]) * 0.15  // MODIFIED: increased spread
+          xExtent[0] - (xExtent[1] - xExtent[0]) * 0.15,
+          xExtent[1] + (xExtent[1] - xExtent[0]) * 0.15
         ])
         .range([padding, dimensions.width - padding]);
       
       const yScale = d3.scaleLinear()
         .domain([
-          yExtent[0] - (yExtent[1] - yExtent[0]) * 0.15, // MODIFIED: increased spread
-          yExtent[1] + (yExtent[1] - yExtent[0]) * 0.15  // MODIFIED: increased spread
+          yExtent[0] - (yExtent[1] - yExtent[0]) * 0.15,
+          yExtent[1] + (yExtent[1] - yExtent[0]) * 0.15
         ])
         .range([dimensions.height - padding, padding]);
       
-      // Define color scales based on the selected options
       let colorScale;
       
       if (colorBy === 'cluster' && computeClusters) {
-        // For cluster coloring, use a categorical color scale
         const clusterValues = [...new Set(searchResults.map(d => d.cluster).filter(c => c !== null))];
         colorScale = d3.scaleOrdinal()
           .domain(clusterValues)
           .range(d3.schemeCategory10);
       } else if (colorBy === 'year') {
-        // For year coloring, use a sequential scale
         const years = [...new Set(searchResults.map(d => d.year))].sort();
         colorScale = d3.scaleOrdinal()
           .domain(years)
@@ -690,18 +932,16 @@ useEffect(() => {
                  colorScheme === 'diverging' ? d3.schemePRGn[9] :
                  d3.schemeBlues[9]);
       } else if (colorBy === 'venue') {
-        // For venue coloring, use a categorical scale
         const venues = [...new Set(searchResults.map(d => d.venue))];
         colorScale = d3.scaleOrdinal()
           .domain(venues)
           .range(d3.schemeCategory10);
       } else {
-        // Improved color scale for scores
         const colorRange = colorScheme === 'diverging' 
           ? ['#7a5c55', '#b3a296', '#FFFFFF', '#a3c8c9', '#5d9ca0']
           : colorScheme === 'sequential'
             ? ['#f7fbff', '#deebf7', '#c6dbef', '#9ecae1', '#6baed6', '#4292c6', '#2171b5', '#08519c']
-            : ['#7a5c55', '#b3a296', '#FFFFFF', '#a3c8c9', '#5d9ca0']; // Default
+            : ['#7a5c55', '#b3a296', '#FFFFFF', '#a3c8c9', '#5d9ca0'];
         
         colorScale = d3.scaleLinear()
           .domain([-0.6, -0.3, 0.0, 0.3, 0.6])
@@ -709,24 +949,20 @@ useEffect(() => {
           .clamp(true);
       }
 
-      // MODIFIED: Slightly smaller point size for better visual clarity with more points
       const POINT_SIZE = Math.max(3, Math.min(4, 10 * (500 / searchResults.length)));
       
-      // Update score color gradient legend
       const legendG = svg.select('.legend-container');
-      legendG.selectAll('*').remove(); // Clear existing legend
+      legendG.selectAll('*').remove();
       
-      // Title
       legendG.append('text')
-        .attr('x', 0)
-        .attr('y', -20)
+        .attr('x', 15)
+        .attr('y', -10)
         .text(colorBy)
         .style('font-weight', 'bold')
         .style('text-anchor', 'middle')
         .style('font-size', '12px');
       
       if (colorBy === 'cluster' && computeClusters) {
-        // Cluster legend
         const clusterValues = [...new Set(searchResults.map(d => d.cluster).filter(c => c !== null))].sort((a, b) => a - b);
         
         clusterValues.forEach((cluster, i) => {
@@ -744,7 +980,6 @@ useEffect(() => {
             .style('alignment-baseline', 'middle');
         });
       } else if (colorBy === 'year') {
-        // Year legend
         const yearValues = [...new Set(searchResults.map(d => d.year))].sort();
         
         yearValues.forEach((year, i) => {
@@ -762,7 +997,6 @@ useEffect(() => {
             .style('alignment-baseline', 'middle');
         });
       } else if (colorBy === 'venue') {
-        // Venue legend - show only top 10 venues to avoid overcrowding
         const venueCounts = _.countBy(searchResults, 'venue');
         const topVenues = Object.entries(venueCounts)
           .sort((a, b) => b[1] - a[1])
@@ -784,17 +1018,15 @@ useEffect(() => {
             .style('alignment-baseline', 'middle');
         });
       } else {
-        // Score gradient legend
         const gradientHeight = 200;
         const gradientWidth = 30;
         
-        // Create gradient
         const defs = svg.select('defs');
         if (defs.empty()) {
           svg.append('defs');
         }
         
-        const gradientId = 'score-gradient-' + Date.now(); // Unique ID to avoid conflicts
+        const gradientId = 'score-gradient-' + Date.now();
         const gradient = svg.select('defs').append('linearGradient')
           .attr('id', gradientId)
           .attr('x1', '0%')
@@ -802,7 +1034,6 @@ useEffect(() => {
           .attr('x2', '0%')
           .attr('y2', '0%');
         
-        // Add gradient stops
         const stops = [
           { offset: '0%', color: colorScale(-0.6) },
           { offset: '25%', color: colorScale(-0.3) },
@@ -817,13 +1048,11 @@ useEffect(() => {
             .attr('stop-color', stop.color);
         });
         
-        // Draw gradient rectangle
         legendG.append('rect')
           .attr('width', gradientWidth)
           .attr('height', gradientHeight)
           .style('fill', `url(#${gradientId})`);
         
-        // Add scale ticks
         const ticks = [-0.6, -0.3, 0.0, 0.3, 0.6];
         ticks.forEach(tick => {
           const y = gradientHeight * (1 - ((tick + 0.6) / 1.2));
@@ -845,7 +1074,6 @@ useEffect(() => {
         });
       }
       
-      // Make sure tooltip exists
       let tooltip = d3.select('body').select('.tooltip');
       if (tooltip.empty()) {
         tooltip = d3.select('body').append('div')
@@ -862,22 +1090,17 @@ useEffect(() => {
           .style('transition', 'opacity 0.2s');
       }
       
-      // MODIFIED: Generate fixed positions for papers with better distribution
       if (!visualizationRef.current.fixedPositions || Object.keys(visualizationRef.current.fixedPositions).length === 0) {
         visualizationRef.current.fixedPositions = {};
         
-        // Generate fixed positions based on UMAP if available, otherwise use random positions
         searchResults.forEach((paper, i) => {
-          // Use the paper ID to generate a stable position
           const idHash = parseInt(paper.id.split('-').pop() || '0', 10);
           
-          // Add more jitter for better distribution
           const jitter = {
-            x: Math.sin(idHash * 0.1) * 30,  // MODIFIED: increased jitter amount
-            y: Math.cos(idHash * 0.1) * 30   // MODIFIED: increased jitter amount
+            x: Math.sin(idHash * 0.1) * 30,
+            y: Math.cos(idHash * 0.1) * 30
           };
           
-          // Use the initial UMAP embedding for initial layout if available
           const x = i < umapResult.length 
             ? xScale(umapResult[i][0]) + jitter.x
             : padding + (dimensions.width - 2 * padding) * (Math.sin(idHash * 0.01) * 0.4 + 0.5);
@@ -890,15 +1113,11 @@ useEffect(() => {
         });
       }
       
-      // Get points container
       const pointsG = svg.select('.points-container');
       
-      // Prepare data with fixed positions
       const nodesData = searchResults.map(paper => {
-        // Use fixed position or generate one if needed
         let position = visualizationRef.current.fixedPositions[paper.id];
         
-        // If paper doesn't have a fixed position yet (new paper), create one
         if (!position) {
           const idHash = parseInt(paper.id.split('-').pop() || '0', 10);
           position = {
@@ -915,35 +1134,29 @@ useEffect(() => {
         };
       });
       
-      // Store for future reference
       visualizationRef.current.nodesData = nodesData;
       
-      // Optimized D3 enter/update/exit pattern
-      // Join data to circles using the paper id as the key
       const circles = pointsG.selectAll('circle')
         .data(nodesData, d => d.id);
       
-      // ENTER selection: new circles
       const enterCircles = circles.enter()
         .append('circle')
-        .attr('r', 0) // Start small for animation
+        .attr('r', 0)
         .attr('cx', d => d.x)
         .attr('cy', d => d.y)
         .style('opacity', 0)
         .attr('stroke', 'none')
         .attr('stroke-width', 0);
       
-      // ENTER + UPDATE selection: all circles
-      // For existing circles, only update the fill color based on score - no position change
       enterCircles.merge(circles)
         .transition()
         .duration(750)
         .attr('r', d => selectedPaper && d.id === selectedPaper.id ? POINT_SIZE * 1.5 : POINT_SIZE) 
-        .attr('cx', d => d.x) // Use fixed position
-        .attr('cy', d => d.y) // Use fixed position
+        .attr('cx', d => d.x)
+        .attr('cy', d => d.y)
         .attr('fill', d => {
           if (selectedPaper && d.id === selectedPaper.id) {
-            return '#ff6600'; 
+            return '#000000'; 
           } else if (colorBy === 'cluster' && computeClusters) {
             return d.cluster !== null ? colorScale(d.cluster) : '#cccccc';
           } else if (colorBy === 'year') {
@@ -954,12 +1167,11 @@ useEffect(() => {
             return colorScale(d.score);
           }
         })
-        .attr('stroke', d => selectedPaper && d.id === selectedPaper.id ? '#ff6600' : 'none')
+        .attr('stroke', d => selectedPaper && d.id === selectedPaper.id ? '#000000' : 'none')
         .attr('stroke-width', d => selectedPaper && d.id === selectedPaper.id ? 2 : 0)
         .style('opacity', d => selectedPaper && d.id === selectedPaper.id ? 1 : 0.8) 
         .style('cursor', 'pointer');
       
-      // EXIT selection: circles to remove
       circles.exit()
         .transition()
         .duration(750)
@@ -967,27 +1179,23 @@ useEffect(() => {
         .style('opacity', 0)
         .remove();
       
-      // Update event handlers for all circles
       pointsG.selectAll('circle')
         .on('click', (event, d) => {
-          event.stopPropagation(); // Prevent brush clearing
-          setSelectedPaper(d);
+          event.stopPropagation();
+          handlePaperSelect(d); // 修改：使用新的处理函数
         })
         .on('mouseover', function(event, d) {
-          // Highlight circle
           d3.select(this)
             .transition()
             .duration(100)
             .attr('stroke-width', 2)
-            .attr('stroke', '#ff6600');
+            .attr('stroke', '#000000');
           
-          // Show tooltip with paper info
           tooltip
             .transition()
             .duration(200)
             .style('opacity', 0.9);
             
-          // Format the tooltip content
           const tooltipContent = `
             <strong>${d.title}</strong><br/>
             ${d.authors}<br/>
@@ -1001,29 +1209,23 @@ useEffect(() => {
             .style('top', (event.pageY - 28) + 'px');
         })
         .on('mouseout', function(event, d) {
-          // Reset circle highlight
           d3.select(this)
             .transition()
             .duration(100)
             .attr('stroke-width', selectedPaper && d.id === selectedPaper.id ? 2 : 0)
-            .attr('stroke', selectedPaper && d.id === selectedPaper.id ? '#ff6600' : 'none');
+            .attr('stroke', selectedPaper && d.id === selectedPaper.id ? '#000000' : 'none');
           
-          // Hide tooltip
           tooltip.transition()
             .duration(200)
             .style('opacity', 0);
         });
         
-      // Clear brush and selection on background click
-      // Clear brush and selection on background click
       svg.on('click', function(event) {
         if (event.target.tagName === 'svg' || event.target.classList.contains('background')) {
-          // Remove the brush clearing code since brush is undefined
           setPapersHighlighted([]);
         }
       });
         
-      // Display results count and status
       svg.selectAll('.status-text').remove();
       svg.append('text')
         .attr('class', 'status-text')
@@ -1038,7 +1240,7 @@ useEffect(() => {
       setError(`Visualization error: ${error.message}`);
     }
   }, [searchResults, dimensions, selectedPaper, computeClusters, colorBy, colorScheme, umapResult, 
-     computeState.clusteringComputed, numClusters, papers]);
+     computeState.clusteringComputed, numClusters, handlePaperSelect]);
 
   // Update visualization when data or dimensions change
   useEffect(() => {
@@ -1050,11 +1252,9 @@ useEffect(() => {
   // Reset clusters when computeClusters changes
   useEffect(() => {
     if (!computeClusters) {
-      // Clear cluster assignments
       setSearchResults(prev => prev.map(paper => ({ ...paper, cluster: null })));
       setComputeState(prev => ({ ...prev, clusteringComputed: false }));
     } else if (computeClusters && umapResult && computeState.umapComputed && !computeState.clusteringComputed && !computeState.isComputing) {
-      // Recompute clusters if enabled
       runKMeansClustering();
     }
   }, [computeClusters, umapResult, computeState.umapComputed, computeState.clusteringComputed, computeState.isComputing, runKMeansClustering]);
@@ -1084,7 +1284,6 @@ useEffect(() => {
   const highlightKeywords = useCallback((text) => {
     if (!text || !semanticSearchQuery.trim()) return text;
     
-    // Get keywords from search query
     const keywords = semanticSearchQuery.toLowerCase()
       .split(/\s+/)
       .filter(word => word.length > 2)
@@ -1092,10 +1291,8 @@ useEffect(() => {
     
     if (keywords.length === 0) return text;
     
-    // Create a regex pattern to match all keywords (with word boundaries)
     const pattern = new RegExp(`\\b(${keywords.join('|')})\\b`, 'gi');
     
-    // Replace matches with highlighted version
     return text.replace(
       pattern,
       (match) => `<span class="keyword-highlight">${match}</span>`
@@ -1108,13 +1305,46 @@ useEffect(() => {
       return <p>Select a paper from the visualization to view details</p>;
     }
     
-    // Prepare highlighted title and abstract
     const highlightedTitle = highlightKeywords(selectedPaper.title);
     const highlightedAbstract = highlightKeywords(selectedPaper.abstract);
     
+    // Check if paper has a valid link (not just a placeholder)
+    const hasValidLink = selectedPaper.link && selectedPaper.link !== `#paper-${selectedPaper.id}` && !selectedPaper.link.startsWith('#paper-');
+    
+    const paperIsBookmarked = bookmarkStates[selectedPaper.id] || false;
+    
     return (
       <div className="paper-details">
-        <h3 dangerouslySetInnerHTML={{ __html: highlightedTitle }}></h3>
+        <div className="paper-header">
+          {hasValidLink ? (
+            <a 
+              href={selectedPaper.link} 
+              target="_blank" 
+              rel="noopener noreferrer"
+              className="paper-title-link"
+            >
+              <h3 className="paper-title" dangerouslySetInnerHTML={{ __html: highlightedTitle }}></h3>
+            </a>
+          ) : (
+            <h3 className="paper-title" dangerouslySetInnerHTML={{ __html: highlightedTitle }}></h3>
+          )}
+          <button
+            className={`bookmark-button ${paperIsBookmarked ? 'bookmarked' : ''}`}
+            onClick={(e) => handleBookmarkToggle(selectedPaper, e)}
+            title={paperIsBookmarked ? 'Remove bookmark' : 'Add bookmark'}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path 
+                d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" 
+                stroke="currentColor" 
+                strokeWidth="1.5" 
+                strokeLinecap="round" 
+                strokeLinejoin="round"
+                fill={paperIsBookmarked ? 'currentColor' : 'none'}
+              />
+            </svg>
+          </button>
+        </div>
         <p><strong>Authors:</strong> {selectedPaper.authors}</p>
         <p><strong>Year:</strong> {selectedPaper.year}</p>
         <p><strong>Venue:</strong> {selectedPaper.venue}</p>
@@ -1131,8 +1361,50 @@ useEffect(() => {
           <h4>Abstract</h4>
           <p dangerouslySetInnerHTML={{ __html: highlightedAbstract }}></p>
         </div>
-        <div className="actions">
-          <a href={selectedPaper.link} className="action-button primary" target="_blank" rel="noopener noreferrer">View Paper</a>
+      </div>
+    );
+  };
+
+  // NEW: Render data source selection
+  const renderDataSourceSelection = () => {
+    return (
+      <div className="data-source-section">
+        <h2>Data Source</h2>
+        <div className="data-source-buttons">
+          <button 
+            className={`data-source-btn ${dataSource === 'default' ? 'active' : ''}`}
+            onClick={() => handleDataSourceChange('default')}
+          >
+            📄 Use Default Data
+          </button>
+          <button 
+            className={`data-source-btn ${dataSource === 'uploaded' ? 'active' : ''}`}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            📁 Select CSV File
+          </button>
+        </div>
+        
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv"
+          onChange={handleFileUpload}
+          style={{ display: 'none' }}
+        />
+        
+        <div className="data-source-status">
+          {dataSource === 'default' && (
+            <p>Using default mock data ({papers.length} papers)</p>
+          )}
+          {dataSource === 'uploaded' && uploadedFile && (
+            <p>
+              {uploadStatus || `Using uploaded file: ${uploadedFile.name} (${uploadedPapers.length} papers)`}
+            </p>
+          )}
+          {dataSource === 'uploaded' && !uploadedFile && (
+            <p>No file uploaded yet. Click "Select CSV File" to upload your data.</p>
+          )}
         </div>
       </div>
     );
@@ -1141,6 +1413,9 @@ useEffect(() => {
   return (
     <div className="container">
       
+      {/* NEW: Data source selection */}
+      {renderDataSourceSelection()}
+
       {/* Semantic search bar */}
       <div className="semantic-search">
         <div className="search-bar">
@@ -1154,7 +1429,7 @@ useEffect(() => {
           <button onClick={performSemanticSearch}>Search</button>
         </div>
         <div className="search-options">
-          <label>
+          <label className="checkbox-label">
             <input
               type="checkbox"
               checked={liveSearchEnabled}
@@ -1178,13 +1453,15 @@ useEffect(() => {
 
       {/* Visualization options */}
       <div className="filters">
-        <div className="filter-group">
-          <label>Enable Clustering:</label>
-          <input
-            type="checkbox"
-            checked={computeClusters}
-            onChange={(e) => setComputeClusters(e.target.checked)}
-          />
+        <div className="filter-group checkbox-group">
+          <label className="checkbox-label">
+            <input
+              type="checkbox"
+              checked={computeClusters}
+              onChange={(e) => setComputeClusters(e.target.checked)}
+            />
+            Enable Clustering
+          </label>
         </div>
         <div className="filter-group">
           <label>Number of clusters:</label>
@@ -1230,7 +1507,6 @@ useEffect(() => {
         </div>
       )}
       
-      {/* MODIFIED: Changed layout to make visualization larger and details smaller */}
       <div className="main-content">
         <div className="visualization-section">
           <h2>Paper Similarity Visualization</h2>
@@ -1241,7 +1517,6 @@ useEffect(() => {
               style={{ height: dimensions.height + 'px' }}
             ></svg>
             
-            {/* Show computation state when no results yet */}
             {(!umapResult && !isLoading) && (
               <div className="empty-state">
                 <p>No visualization data available. Try a search query.</p>
@@ -1268,13 +1543,13 @@ useEffect(() => {
         </div>
       </div>
       
-      {/* MODIFIED: Moved Top Search Results below main content */}
       <TopSearchResults 
         searchResults={searchResults}
-        onPaperSelect={setSelectedPaper}
+        onPaperSelect={handlePaperSelect}
+        bookmarkStates={bookmarkStates}
+        onBookmarkToggle={handleBookmarkToggle}
       />
       
-      {/* Render highlighted papers */}
       {papersHighlighted.length > 0 && (
         <div className="highlighted-papers">
           <h2>Selected Papers ({papersHighlighted.length})</h2>
@@ -1300,15 +1575,14 @@ useEffect(() => {
         </div>
       )}
       
-      {/* Render computation progress overlay */}
       {renderComputeProgress()}
 
       <style jsx>{`
       .container {
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-        max-width: 1200px;
-        margin: 0 auto;
-        padding: 20px;
+        max-width: none;
+        margin: 0;
+        padding: 0;
       }
 
       h1 {
@@ -1321,6 +1595,61 @@ useEffect(() => {
         color: #2a4365;
         margin-top: 20px;
         margin-bottom: 15px;
+      }
+
+      /* NEW: Data source styles */
+      .data-source-section {
+        margin-bottom: 20px;
+      }
+
+      .data-source-section h2 {
+        margin-bottom: 10px;
+        font-size: 16px;
+        font-weight: 500;
+        color: #333;
+      }
+
+      .data-source-buttons {
+        display: flex;
+        gap: 15px;
+        margin-bottom: 10px;
+      }
+
+      .data-source-btn {
+        height: 40px;
+        padding: 0 20px;
+        border: 2px solid #4299e1;
+        border-radius: 6px;
+        background-color: white;
+        color: #4299e1;
+        cursor: pointer;
+        font-size: 14px;
+        font-weight: 500;
+        transition: all 0.2s ease;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        box-sizing: border-box;
+      }
+
+      .data-source-btn:hover {
+        background-color: #ebf8ff;
+        transform: translateY(-1px);
+      }
+
+      .data-source-btn.active {
+        background-color: #4299e1;
+        color: white;
+      }
+
+      .data-source-status {
+        margin: 0;
+      }
+
+      .data-source-status p {
+        margin: 0;
+        font-size: 14px;
+        color: #666;
       }
 
       .semantic-search, .search-bar {
@@ -1359,34 +1688,69 @@ useEffect(() => {
         align-items: center;
         margin-top: 10px;
         gap: 20px;
-      }
-
-      .option-group {
-        display: flex;
-        align-items: center;
-        gap: 10px;
+        margin-left: 0; 
       }
 
       .filters {
         display: flex;
         flex-wrap: wrap;
-        gap: 15px;
+        gap: 16px;
         margin-bottom: 20px;
-        padding: 15px;
+        padding: 0;
         background-color: #f7fafc;
         border-radius: 4px;
+      }
+
+      .checkbox-label {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        cursor: pointer;
+        height: 4px;
+        padding: 0; 
+        margin: 0; 
+      }
+
+      .checkbox-label input[type="checkbox"] {
+        margin: 0;
+        cursor: pointer;
+        width: 16px;
+        height: 16px;
+        flex-shrink: 0;
+      }
+
+      .checkbox-group {
+        display: flex;
+        align-items: center;
+        height: 4px;
+        padding: 0; 
+        margin: 0; 
+      }
+
+      .option-group {
+        display: flex;
+        align-items: center;
+        gap: 4px;
       }
 
       .filter-group {
         display: flex;
         align-items: center;
-        gap: 8px;
+        gap: 5px;
+        height: 4px; 
       }
 
       .filter-group select, .filter-group input {
         padding: 8px;
         border: 1px solid #cbd5e0;
         border-radius: 4px;
+        height: 36px;
+        box-sizing: border-box;
+      }
+
+      .filter-group input[type="range"] {
+        height: 20px; 
+        padding: 0;
       }
 
       .viz-options {
@@ -1399,16 +1763,15 @@ useEffect(() => {
         border-radius: 4px;
       }
 
-      /* MODIFIED: Changed layout to make visualization larger and details smaller */
       .main-content {
         display: grid;
-        grid-template-columns: 3fr 1fr; /* MODIFIED: changed from 1fr 1fr to 3fr 1fr */
-        gap: 20px;
+        grid-template-columns: 3fr 1fr;
+        gap: 4px;
         margin-bottom: 30px;
       }
 
       .visualization-container {
-        height: 700px; /* MODIFIED: increased from 600px to 700px */
+        height: 700px;
         border: 1px solid #e2e8f0;
         border-radius: 4px;
         position: relative;
@@ -1505,6 +1868,70 @@ useEffect(() => {
       .action-button.primary {
         background-color: #4299e1;
         color: white;
+      }
+
+      /* NEW: Styles for paper title links and bookmark button */
+      .paper-header {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      
+      .paper-header .paper-title {
+        flex: 1;
+        margin: 0;
+      }
+      
+      .paper-title-link {
+        text-decoration: none;
+        color: inherit;
+        display: block;
+      }
+
+      .paper-title-link:hover {
+        text-decoration: none;
+      }
+
+      .paper-title-link:hover .paper-title {
+        color: #2b6cb0;
+        text-decoration: underline;
+      }
+      
+      .bookmark-button {
+        background: none;
+        border: none;
+        cursor: pointer;
+        color: #cbd5e0;
+        transition: all 0.3s ease;
+        padding: 8px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      
+      .bookmark-button:hover {
+        color: #f6ad55;
+        background-color: rgba(246, 173, 85, 0.15);
+        transform: scale(1.15);
+        box-shadow: 0 2px 8px rgba(246, 173, 85, 0.3);
+      }
+      
+      .bookmark-button.bookmarked {
+        color: #f6ad55;
+        background-color: rgba(246, 173, 85, 0.1);
+      }
+      
+      .bookmark-button.bookmarked:hover {
+        color: #e53e3e;
+        background-color: rgba(229, 62, 62, 0.1);
+        box-shadow: 0 2px 8px rgba(229, 62, 62, 0.3);
+      }
+      
+      .bookmark-button svg {
+        filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
       }
 
       .highlighted-papers {
@@ -1607,11 +2034,11 @@ useEffect(() => {
 };
 
 // Component for displaying top search results (continued)
-const TopSearchResults = ({ searchResults, onPaperSelect }) => {
+const TopSearchResults = ({ searchResults, onPaperSelect, bookmarkStates, onBookmarkToggle }) => {
   // Take only top 8 papers by score
   const topPapers = [...searchResults]
     .sort((a, b) => b.score - a.score)
-    .slice(0, 8);
+    .slice(0, 10);
 
     const normalizeScore = (score) => {
       return ((score + 0.6) / 1.2).toFixed(2);
@@ -1622,24 +2049,49 @@ const TopSearchResults = ({ searchResults, onPaperSelect }) => {
         <h2>Top Search Results</h2>
         {topPapers.length > 0 ? (
           <div className="top-papers-grid">
-            {topPapers.map((paper) => (
-              <div 
-                key={paper.id} 
-                className="top-paper-card"
-                onClick={() => onPaperSelect(paper)}
-              >
-                <h3>{paper.title}</h3>
-                <p className="authors">{paper.authors}</p>
-                <div className="paper-meta">
-                  <span>{paper.year}</span>
-                  <span>{paper.venue}</span>
-                  {paper.area && <span className="area-tag">{paper.area}</span>}
+            {topPapers.map((paper) => {
+              const paperIsBookmarked = bookmarkStates[paper.id] || false;
+              
+              return (
+                <div 
+                  key={paper.id} 
+                  className="top-paper-card"
+                  onClick={() => onPaperSelect(paper)}
+                >
+                  <h3>{paper.title}</h3>
+                  <p className="authors">{paper.authors}</p>
+                  <div className="paper-meta">
+                    <span>{paper.year}</span>
+                    <span>{paper.venue}</span>
+                    {paper.area && <span className="area-tag">{paper.area}</span>}
+                  </div>
+                  <div className="score-badge">
+                    Score: {normalizeScore(paper.score)}
+                  </div>
+                  
+                  {/* 新增：五角星收藏按钮 */}
+                  <button
+                    className={`card-bookmark-button ${paperIsBookmarked ? 'bookmarked' : ''}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onBookmarkToggle(paper, e);
+                    }}
+                    title={paperIsBookmarked ? 'Remove bookmark' : 'Add bookmark'}
+                  >
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path 
+                        d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" 
+                        stroke="currentColor" 
+                        strokeWidth="1.5" 
+                        strokeLinecap="round" 
+                        strokeLinejoin="round"
+                        fill={paperIsBookmarked ? 'currentColor' : 'none'}
+                      />
+                    </svg>
+                  </button>
                 </div>
-                <div className="score-badge">
-                  Score: {normalizeScore(paper.score)}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
           <p>No results found. Try adjusting your search criteria.</p>
@@ -1685,6 +2137,7 @@ const TopSearchResults = ({ searchResults, onPaperSelect }) => {
           -webkit-line-clamp: 2;
           -webkit-box-orient: vertical;
           overflow: hidden;
+          padding-right: 30px; /* Make room for bookmark button */
         }
         
         .authors {
@@ -1719,7 +2172,7 @@ const TopSearchResults = ({ searchResults, onPaperSelect }) => {
         
         .score-badge {
           position: absolute;
-          top: 10px;
+          bottom: 10px;
           right: 10px;
           background-color: #4299e1;
           color: white;
@@ -1727,6 +2180,46 @@ const TopSearchResults = ({ searchResults, onPaperSelect }) => {
           border-radius: 12px;
           font-size: 12px;
           font-weight: 600;
+        }
+        
+        /* 新增：五角星卡片收藏按钮样式 */
+        .card-bookmark-button {
+          position: absolute;
+          top: 10px;
+          right: 10px;
+          background: none;
+          border: none;
+          cursor: pointer;
+          color: #cbd5e0;
+          transition: all 0.3s ease;
+          padding: 6px;
+          border-radius: 50%;
+          z-index: 2;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+        }
+        
+        .card-bookmark-button:hover {
+          color: #f6ad55;
+          background-color: rgba(246, 173, 85, 0.15);
+          transform: scale(1.15);
+          box-shadow: 0 2px 8px rgba(246, 173, 85, 0.3);
+        }
+        
+        .card-bookmark-button.bookmarked {
+          color: #f6ad55;
+          background-color: rgba(246, 173, 85, 0.1);
+        }
+        
+        .card-bookmark-button.bookmarked:hover {
+          color: #e53e3e;
+          background-color: rgba(229, 62, 62, 0.1);
+          box-shadow: 0 2px 8px rgba(229, 62, 62, 0.3);
+        }
+        
+        .card-bookmark-button svg {
+          filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.1));
         }
         
         @media (max-width: 640px) {

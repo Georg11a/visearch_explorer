@@ -1,15 +1,15 @@
 {
   "files": {
     "main.css": "/visearch_explorer/static/css/main.2d92eda0.css",
-    "main.js": "/visearch_explorer/static/js/main.30fbdadb.js",
+    "main.js": "/visearch_explorer/static/js/main.16e45338.js",
     "static/js/453.f79932f8.chunk.js": "/visearch_explorer/static/js/453.f79932f8.chunk.js",
     "index.html": "/visearch_explorer/index.html",
     "main.2d92eda0.css.map": "/visearch_explorer/static/css/main.2d92eda0.css.map",
-    "main.30fbdadb.js.map": "/visearch_explorer/static/js/main.30fbdadb.js.map",
+    "main.16e45338.js.map": "/visearch_explorer/static/js/main.16e45338.js.map",
     "453.f79932f8.chunk.js.map": "/visearch_explorer/static/js/453.f79932f8.chunk.js.map"
   },
   "entrypoints": [
     "static/css/main.2d92eda0.css",
-    "static/js/main.30fbdadb.js"
+    "static/js/main.16e45338.js"
   ]
 }
